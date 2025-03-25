@@ -15,7 +15,7 @@ A Streamlit-based application that fetches news articles, performs sentiment ana
 1. Clone the repository:
 
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/saksham-jain177/NewsSpeak.git
     ```
 
 2. Install dependencies:
