@@ -20,12 +20,14 @@ from collections import Counter
 from gtts import gTTS
 from googletrans import Translator
 import os
-from utils import EnsembleSentimentAnalyzer, LLMSummarizer
+from utils import SentimentAnalyzer, LLMSummarizer  # Updated import
 import asyncio
 import html
 from typing import List, Dict
 import re
 import aiohttp
+from datetime import datetime, timedelta
+import json
 
 # Add after other imports
 st.set_page_config(
@@ -82,11 +84,11 @@ nltk.download('vader_lexicon')
 nltk.download('punkt')
 nltk.download('stopwords')
 
-# Initialize the ensemble sentiment analyzer
-sentiment_analyzer = EnsembleSentimentAnalyzer()
+# Initialize the sentiment analyzer
+sentiment_analyzer = SentimentAnalyzer()  # Updated initialization
 
 # Initialize the LLM summarizer
-llm_summarizer = LLMSummarizer()
+llm_summarizer = LLMSummarizer()  # Updated initialization
 
 
 # Module 1: News Scraping Function
@@ -199,23 +201,50 @@ def extract_topics(text, num_topics=3):
 
 # Module 4: Comparative Analysis Functions
 
-def perform_comparative_analysis(sentiments):
+def perform_comparative_analysis(sentiments, articles):
     """
-    Aggregate sentiment counts from a list of sentiment labels.
+    Aggregate sentiment counts from a list of sentiment labels and calculate average score.
     """
     sentiment_counts = Counter(sentiments)
-    return dict(sentiment_counts)
+    average_score = sum(float(article["Score"]) for article in articles) / len(articles)
+    return {
+        "sentiment_distribution": dict(sentiment_counts),
+        "average_score": average_score
+    }
 
-def generate_final_sentiment(sentiments):
+def generate_final_sentiment(sentiments, sentiment_scores):
     """
-    Determine overall sentiment based on the majority sentiment.
+    Determine overall sentiment based on the majority sentiment and confidence.
     """
-    counts = Counter(sentiments)
-    if counts:
-        final_sentiment = counts.most_common(1)[0][0]
-    else:
-        final_sentiment = "Neutral"
-    return final_sentiment
+    if not sentiments:
+        return "Neutral", 0.0
+    
+    sentiment_counts = Counter(sentiments)
+    most_common_sentiment = sentiment_counts.most_common(1)[0][0]
+    
+    # Calculate confidence
+    total_articles = len(sentiments)
+    majority_count = sentiment_counts[most_common_sentiment]
+    confidence = majority_count / total_articles
+    
+    return most_common_sentiment, confidence
+
+def generate_final_sentiment(sentiments, sentiment_scores):
+    """
+    Determine overall sentiment based on the majority sentiment and confidence.
+    """
+    if not sentiments:
+        return "Neutral", 0.0
+    
+    sentiment_counts = Counter(sentiments)
+    most_common_sentiment = sentiment_counts.most_common(1)[0][0]
+    
+    # Calculate confidence
+    total_articles = len(sentiments)
+    majority_count = sentiment_counts[most_common_sentiment]
+    confidence = majority_count / total_articles
+    
+    return most_common_sentiment, confidence
 
 
 # Module 5: Text-to-Speech Generation Function
@@ -358,17 +387,21 @@ async def main():
             # Generate individual summary
             article_summary = await llm_summarizer.generate_article_summary(clean_title, clean_content)
             
-            # Use the ensemble analyzer
+            # Use the sentiment analyzer
             sentiment_result = sentiment_analyzer.analyze_sentiment(clean_content)
             sentiments.append(sentiment_result['sentiment'])
             topics = extract_topics(clean_content)
             
             article_data = {
                 "Title": clean_title,
-                "Summary": article_summary,  # Add the generated summary
+                "Summary": article_summary,
                 "Sentiment": sentiment_result['sentiment'],
-                "FinBERT_Confidence": f"{sentiment_result['finbert_confidence']:.3f}",
-                "VADER_Score": f"{sentiment_result['vader_score']:.3f}",
+                "Score": f"{sentiment_result['score']:.3f}",
+                "Details": {
+                    "Positive": f"{sentiment_result['scores']['pos']:.3f}",
+                    "Neutral": f"{sentiment_result['scores']['neu']:.3f}",
+                    "Negative": f"{sentiment_result['scores']['neg']:.3f}"
+                },
                 "Topics": topics
             }
             report["Articles"].append(article_data)
@@ -408,9 +441,9 @@ async def main():
                 "Article_Count": len(articles),
                 "Time_Period": "Last 24 hours",  # You might want to make this dynamic
                 "Sentiment_Distribution": {
-                    "Positive": sentiments.count("positive"),
-                    "Neutral": sentiments.count("neutral"),
-                    "Negative": sentiments.count("negative")
+                    "Positive": sentiments.count("Positive"),
+                    "Neutral": sentiments.count("Neutral"),
+                    "Negative": sentiments.count("Negative")
                 }
             }
         except Exception as e:
@@ -418,20 +451,18 @@ async def main():
             report["Analysis_Summary"] = "Summary generation failed."
         
         # Comparative analysis
-        comp_analysis = {
-            "Sentiment Distribution": perform_comparative_analysis(sentiments),
+        comp_analysis = perform_comparative_analysis(sentiments, report["Articles"])
+        report["Comparative Sentiment Score"] = {
+            "Sentiment Distribution": comp_analysis["sentiment_distribution"],
+            "Average Score": f"{comp_analysis['average_score']:.3f}",
             "Coverage Differences": "Detailed comparison not implemented",
             "Topic Overlap": "Detailed topic comparison not implemented"
         }
-        report["Comparative Sentiment Score"] = comp_analysis
-        final_sentiment = generate_final_sentiment(sentiments)
         
-        # Enhanced final sentiment message
-        confidence_scores = [float(article["FinBERT_Confidence"]) for article in report["Articles"]]
-        avg_confidence = sum(confidence_scores) / len(confidence_scores)
+        final_sentiment, confidence = generate_final_sentiment(sentiments, [float(article["Score"]) for article in report["Articles"]])
         report["Final Sentiment Analysis"] = (
             f"Overall sentiment for {company} is {final_sentiment} "
-            f"(Average confidence: {avg_confidence:.2%})"
+            f"(Average score: {comp_analysis['average_score']:.3f}, Confidence: {confidence:.1f}%)"
         )
         
         # Display detailed sentiment visualization first
@@ -440,18 +471,46 @@ async def main():
             with st.expander(f"Article: {article['Title'][:100]}..."):
                 st.write(f"Summary: {article['Summary']}")
                 st.write(f"Sentiment: {article['Sentiment']}")
-                st.write(f"FinBERT Confidence: {article['FinBERT_Confidence']}")
-                st.write(f"VADER Score: {article['VADER_Score']}")
+                st.write(f"VADER Score: {article['Score']}")
+                st.write(f"Detailed Scores: {article['Details']}")
                 st.write(f"Topics: {', '.join(article['Topics'])}")
 
         # Display overview summary after articles
         if report.get("Analysis_Summary"):
             st.subheader("Overall Analysis")
-            st.write(report["Analysis_Summary"]["Overview"])
+            
+            # Display all sections of the analysis summary
+            st.write("Article Count:", report["Analysis_Summary"]["Article_Count"])
+            st.write("Time Period:", report["Analysis_Summary"]["Time_Period"])
+            
+            # Display sentiment distribution
+            st.write("Sentiment Distribution:")
+            st.write(report["Analysis_Summary"]["Sentiment_Distribution"])
+            
+            # Display the structured overview sections
+            if report["Analysis_Summary"]["Overview"]:
+                for section, points in report["Analysis_Summary"]["Overview"].items():
+                    if points:  # Only display sections with content
+                        st.write(f"\n{section}:")
+                        for point in points:
+                            st.write(f"• {point}")
         
         # Display the structured report as JSON
         st.subheader("Structured Report")
         st.json(report)
+
+        # Add download button for JSON
+        if st.button("Download Report as JSON"):
+            # Convert report to JSON string
+            report_json = json.dumps(report, indent=2)
+            
+            # Create download button using st.download_button
+            st.download_button(
+                label="Click to Download",
+                data=report_json,
+                file_name=f"{company}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
         
         # Generate Hindi TTS for comprehensive summary
         st.info("Generating Hindi audio summary...")

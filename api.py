@@ -5,7 +5,7 @@ import aiohttp
 from utils import (
     fetch_from_source,
     LLMSummarizer,
-    EnsembleSentimentAnalyzer,
+    SentimentAnalyzer,  # Updated import
     extract_topics,
     perform_comparative_analysis,
     generate_final_sentiment,
@@ -26,7 +26,7 @@ class ArticleRequest(BaseModel):
         return v
 
 app = Flask(__name__)
-sentiment_analyzer = EnsembleSentimentAnalyzer()
+sentiment_analyzer = SentimentAnalyzer()  # Updated initialization
 llm_summarizer = LLMSummarizer()
 
 @app.errorhandler(Exception)
@@ -57,7 +57,7 @@ async def api_scrape():
 @app.route('/api/sentiment', methods=['POST'])
 def api_sentiment():
     """
-    Enhanced endpoint to analyze sentiment using ensemble approach.
+    Endpoint to analyze sentiment using VADER.
     Expects a JSON payload with a 'text' field.
     """
     data = request.get_json()
@@ -67,12 +67,15 @@ def api_sentiment():
     text = data['text']
     result = sentiment_analyzer.analyze_sentiment(text)
     
-    # Format the response as a single object
     return jsonify({
         "analysis": {
             "sentiment": result["sentiment"],
-            "finbert_confidence": f"{result['finbert_confidence']:.3f}",
-            "vader_score": f"{result['vader_score']:.3f}"
+            "score": f"{result['score']:.3f}",
+            "details": {
+                "pos": f"{result['scores']['pos']:.3f}",
+                "neu": f"{result['scores']['neu']:.3f}",
+                "neg": f"{result['scores']['neg']:.3f}"
+            }
         }
     })
 
@@ -109,8 +112,7 @@ async def api_report():
             "Title": article['title'],
             "Summary": article['summary'],
             "Sentiment": sentiment_result['sentiment'],
-            "FinBERT_Confidence": sentiment_result['finbert_confidence'],
-            "VADER_Score": sentiment_result['vader_score'],
+            "Score": sentiment_result['score'],
             "Topics": topics,
             "URL": article['url']
         }
@@ -194,8 +196,7 @@ async def process_articles_for_analysis(articles: List[Dict], company: str) -> D
             "Title": article['title'],
             "Summary": article['summary'],
             "Sentiment": sentiment_result['sentiment'],
-            "FinBERT_Score": sentiment_result['finbert_confidence'],
-            "VADER_Score": sentiment_result['vader_score'],
+            "Score": sentiment_result['score'],
             "Topics": topics
         }
         report["Articles"].append(article_data)

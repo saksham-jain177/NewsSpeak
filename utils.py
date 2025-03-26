@@ -29,81 +29,36 @@ nltk.download('stopwords')
 # Define news sources
 news_sources = ["google_news", "inshorts"]  # Add your news sources here
 
-class FinancialSentimentAnalyzer:
+class SentimentAnalyzer:
     def __init__(self):
-        # Using FinBERT, specifically trained for financial text
-        self.tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
-        self.model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
-        self.labels = ["positive", "negative", "neutral"]
-
-    def analyze_sentiment(self, text):
-        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-        outputs = self.model(**inputs)
-        predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-        
-        # Get predicted label and confidence
-        label_id = torch.argmax(predictions).item()
-        confidence = predictions[0][label_id].item()
-        
-        return {
-            "sentiment": self.labels[label_id],
-            "confidence": confidence,
-            "scores": {
-                label: score.item() 
-                for label, score in zip(self.labels, predictions[0])
-            }
-        }
-
-class EnsembleSentimentAnalyzer:
-    def __init__(self):
-        self.finbert_analyzer = FinancialSentimentAnalyzer()
-        self.vader_analyzer = SentimentIntensityAnalyzer()
+        self.analyzer = SentimentIntensityAnalyzer()
         
     def analyze_sentiment(self, text):
-        # Get FinBERT analysis
-        finbert_result = self.finbert_analyzer.analyze_sentiment(text)
+        scores = self.analyzer.polarity_scores(text)
+        compound = scores['compound']
         
-        # Get VADER analysis
-        vader_scores = self.vader_analyzer.polarity_scores(text)
-        
-        # Ensemble logic - weighing both models
-        final_sentiment = self._combine_sentiments(
-            finbert_result["sentiment"],
-            vader_scores["compound"]
-        )
-        
+        # More strict thresholds for financial news
+        if compound >= 0.15:  # Increased threshold
+            sentiment = "Positive"
+        elif compound <= -0.15:  # Decreased threshold
+            sentiment = "Negative"
+        else:
+            # Consider word frequency for neutral cases
+            if scores['neg'] > 0.15:  # If significant negative words present
+                sentiment = "Negative"
+            elif scores['pos'] > 0.15:  # If significant positive words present
+                sentiment = "Positive"
+            else:
+                sentiment = "Neutral"
+            
         return {
-            "sentiment": final_sentiment,
-            "finbert_confidence": finbert_result["confidence"],
-            "vader_score": vader_scores["compound"]
+            "sentiment": sentiment,
+            "score": compound,
+            "scores": scores
         }
-    
-    def _combine_sentiments(self, finbert_sentiment, vader_compound):
-        # FinBERT is specifically trained for financial text
-        finbert_weight = 0.7
-        vader_weight = 0.3
-        
-        # If VADER shows strong sentiment, adjust weights
-        if abs(vader_compound) > 0.5:
-            vader_weight = 0.7
-            finbert_weight = 0.3
-        
-        # Convert finbert sentiment to numeric
-        finbert_numeric = {
-            "positive": 1,
-            "negative": -1,
-            "neutral": 0
-        }.get(finbert_sentiment, 0)
-        
-        # Weighted combination
-        combined_score = (finbert_numeric * finbert_weight) + (vader_compound * vader_weight)
-        
-        # VADER's scale is -1 to 1, so adjust thresholds accordingly
-        if combined_score <= -0.1:  # More strict negative threshold
-            return "negative"
-        elif combined_score >= 0.1:  # More strict positive threshold
-            return "positive"
-        return "neutral"
+
+# Create a global instance of SentimentAnalyzer
+sentiment_analyzer = SentimentAnalyzer()
 
 # -------------------------------
 # Function: scrape_articles
@@ -241,49 +196,50 @@ def extract_topics(text):
 # Function: perform_comparative_analysis
 # -------------------------------
 def perform_comparative_analysis(sentiments, articles):
-    """
-    Enhanced comparative analysis with detailed insights
-    """
-    # Basic sentiment distribution
+    """Analyze sentiment distribution and calculate confidence"""
     sentiment_counts = Counter(sentiments)
-    
-    # Calculate percentages
     total = len(sentiments)
-    sentiment_distribution = {
-        sentiment: {
-            'count': count,
-            'percentage': (count/total) * 100
-        } for sentiment, count in sentiment_counts.items()
+    
+    # Calculate distribution percentages
+    distribution = {
+        "Positive": (sentiment_counts["Positive"] / total) * 100,
+        "Neutral": (sentiment_counts["Neutral"] / total) * 100,
+        "Negative": (sentiment_counts["Negative"] / total) * 100
     }
     
-    # Trend analysis
-    dominant_sentiment = max(sentiment_counts.items(), key=lambda x: x[1])[0]
+    # Find the dominant sentiment based on both count and strength
+    scores = [float(article.get("Score", 0)) for article in articles]
+    avg_score = sum(scores) / len(scores) if scores else 0
     
-    # Source diversity
-    unique_sources = len(set(article['url'].split('/')[2] for article in articles if article['url']))
+    # Determine dominant sentiment using both frequency and score strength
+    if abs(avg_score) < 0.05:  # Using VADER's threshold
+        dominant = "Neutral"
+    else:
+        dominant = "Positive" if avg_score > 0 else "Negative"
+    
+    # Calculate confidence based on the strength of the average score
+    confidence = min(abs(avg_score) * 100, 100)  # Convert to percentage, cap at 100
     
     return {
-        "sentiment_distribution": sentiment_distribution,
-        "dominant_sentiment": dominant_sentiment,
-        "unique_sources": unique_sources,
-        "total_articles": total,
-        "confidence_score": (max(sentiment_counts.values()) / total) * 100
+        "sentiment_distribution": distribution,
+        "dominant_sentiment": dominant,
+        "confidence_score": confidence,
+        "average_score": avg_score,
+        "unique_sources": len(set(article.get('source', '') for article in articles))
     }
 
 # -------------------------------
 # Function: generate_final_sentiment
 # -------------------------------
-def generate_final_sentiment(sentiments):
-    """
-    Determines the overall sentiment based on the majority vote from the list of sentiments.
-    Returns the sentiment that occurs most frequently.
-    """
-    counts = Counter(sentiments)
-    if counts:
-        final_sentiment = counts.most_common(1)[0][0]
-    else:
-        final_sentiment = "Neutral"
-    return final_sentiment
+def generate_final_sentiment(sentiments, scores=None):
+    """Generate final sentiment based on both frequency and score strength"""
+    if not scores:
+        return max(Counter(sentiments).items(), key=lambda x: x[1])[0]
+    
+    avg_score = sum(scores) / len(scores)
+    if abs(avg_score) < 0.05:
+        return "Neutral"
+    return "Positive" if avg_score > 0 else "Negative"
 
 # -------------------------------
 # Function: generate_tts
@@ -445,9 +401,6 @@ async def fetch_article_content(session: aiohttp.ClientSession, url: str) -> Opt
         print(f"Error fetching article content: {str(e)}")
     return None
 
-# Create a global instance of EnsembleSentimentAnalyzer
-sentiment_analyzer = EnsembleSentimentAnalyzer()
-
 class LLMSummarizer:
     def __init__(self):
         self.api_key = os.getenv("OPENROUTER_API_KEY")
@@ -466,11 +419,27 @@ class LLMSummarizer:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a news summarizer. Create a one-sentence summary that provides context and implications beyond the headline. Focus on the key business or technical impact."
+                        "content": """You are a news summarizer that creates concise, factual summaries.
+                        STRICT RULES:
+                        1. Generate ONLY ONE direct sentence based on the title
+                        2. NO prefixes (like 'Summary:', 'Analysis:', etc.)
+                        3. NO formatting markers or special characters
+                        4. NO asking for context or providing options
+                        5. Focus on business/technical implications
+                        6. Start directly with the main point
+                        7. If title is unclear, make a neutral statement based on available facts
+                        8. Maximum length: 200 characters
+                        
+                        FORBIDDEN:
+                        - Multiple sentences
+                        - Bullet points
+                        - Prefixes or labels
+                        - Questions
+                        - Formatting characters (_,*,etc)"""
                     },
                     {
                         "role": "user",
-                        "content": f"Based on this title and content, provide a meaningful one-sentence summary:\nTitle: {title}\nContent: {content}"
+                        "content": f"Title: {title}"
                     }
                 ]
             }
@@ -484,6 +453,8 @@ class LLMSummarizer:
                     if response.status == 200:
                         data = await response.json()
                         summary = data["choices"][0]["message"]["content"].strip()
+                        # Remove any potential prefixes or special characters
+                        summary = summary.lstrip('_:*.- \n')
                         if summary and not ('<' in summary or '>' in summary or 'http' in summary.lower()):
                             return summary
             
@@ -510,7 +481,9 @@ class LLMSummarizer:
                         3. Business Implications (2-3 bullet points)
                         4. Recommendations (if applicable)
                         
-                        Use bullet points (*) for each point. Be concise and specific."""
+                        Use simple bullet points without any special characters or formatting.
+                        Each point should start directly with the main message.
+                        Do not use asterisks, colons, or other formatting markers."""
                     },
                     {
                         "role": "user",
