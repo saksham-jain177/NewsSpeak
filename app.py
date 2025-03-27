@@ -1,3 +1,4 @@
+
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -338,19 +339,47 @@ def query_articles(articles: List[Dict], query: str) -> List[Dict]:
     
     return results
 
+def calculate_time_period(articles):
+    """Calculate the time period covered by the articles"""
+    dates = [article.get('published_date') for article in articles if article.get('published_date')]
+    if not dates:
+        return "Recent articles"
+    
+    dates = sorted(dates)
+    oldest = min(dates)
+    newest = max(dates)
+    
+    if oldest.date() == newest.date():
+        return f"Articles from {oldest.strftime('%B %d, %Y')}"
+    else:
+        return f"Articles from {oldest.strftime('%B %d')} to {newest.strftime('%B %d, %Y')}"
+
+if 'current_report' not in st.session_state:
+    st.session_state.current_report = None
+if 'current_company' not in st.session_state:
+    st.session_state.current_company = None
+if 'audio_file' not in st.session_state:
+    st.session_state.audio_file = None
+
 async def main():
     st.title("NewsSpeak: News Summarization & TTS Application")
     st.write("Enter a company name to fetch related news articles, perform sentiment analysis, and generate a Hindi audio summary.")
 
-    # Add a status container at the top
     status_container = st.empty()
-
-    company = st.text_input("Company Name", placeholder="e.g., Tesla")
     
+    # Use session state to maintain the company name
+    company = st.text_input("Company Name", 
+                           value=st.session_state.current_company if st.session_state.current_company else "",
+                           placeholder="e.g., Tesla")
+
     if st.button("Generate Report"):
         if not company:
             status_container.error("Please enter a company name.")
             return
+            
+        st.session_state.current_company = company
+        # Clear previous audio file
+        st.session_state.audio_file = None
         
         with st.spinner("Fetching articles..."):
             articles = scrape_articles(company)
@@ -439,7 +468,7 @@ async def main():
                     section: points for section, points in summary_sections.items() if points
                 },
                 "Article_Count": len(articles),
-                "Time_Period": "Last 24 hours",  # You might want to make this dynamic
+                "Time_Period": calculate_time_period(articles),
                 "Sentiment_Distribution": {
                     "Positive": sentiments.count("Positive"),
                     "Neutral": sentiments.count("Neutral"),
@@ -464,6 +493,13 @@ async def main():
             f"Overall sentiment for {company} is {final_sentiment} "
             f"(Average score: {comp_analysis['average_score']:.3f}, Confidence: {confidence:.1f}%)"
         )
+        
+        # Store the report in session state
+        st.session_state.current_report = report
+
+    # Display report if it exists in session state
+    if st.session_state.current_report:
+        report = st.session_state.current_report
         
         # Display detailed sentiment visualization first
         st.subheader("News Articles Analysis")
@@ -499,28 +535,48 @@ async def main():
         st.subheader("Structured Report")
         st.json(report)
 
-        # Add download button for JSON
-        if st.button("Download Report as JSON"):
-            # Convert report to JSON string
-            report_json = json.dumps(report, indent=2)
-            
-            # Create download button using st.download_button
+        # Create two columns for the download buttons
+        col1, col2 = st.columns(2)
+
+        with col1:
+            report_json = json.dumps(report, indent=2, ensure_ascii=False)
             st.download_button(
-                label="Click to Download",
-                data=report_json,
-                file_name=f"{company}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
+                label="Download Full Report",
+                data=report_json.encode('utf-8'),
+                file_name=f"{st.session_state.current_company}_full_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                key="full_report_download"
+            )
+
+        with col2:
+            sentiment_report = {
+                "company": st.session_state.current_company,
+                "sentiment_distribution": report["Analysis_Summary"]["Sentiment_Distribution"],
+                "time_period": report["Analysis_Summary"]["Time_Period"]
+            }
+            sentiment_json = json.dumps(sentiment_report, indent=2, ensure_ascii=False)
+            st.download_button(
+                label="Download Sentiment Analysis",
+                data=sentiment_json.encode('utf-8'),
+                file_name=f"{st.session_state.current_company}_sentiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                key="sentiment_download"
             )
         
         # Generate Hindi TTS for comprehensive summary
-        st.info("Generating Hindi audio summary...")
-        hindi_summary = await create_hindi_summary(report)
-        tts_file = await generate_tts(hindi_summary)  # Add await here
-        if tts_file and os.path.exists(tts_file):
+        if st.session_state.audio_file is None:
+            st.info("Generating Hindi audio summary...")
+            hindi_summary = await create_hindi_summary(report)
+            tts_file = await generate_tts(hindi_summary)
+            if tts_file and os.path.exists(tts_file):
+                st.session_state.audio_file = tts_file
+            else:
+                st.error("Failed to generate audio.")
+        
+        # Display audio if it exists
+        if st.session_state.audio_file and os.path.exists(st.session_state.audio_file):
             st.subheader("Hindi Audio Summary")
-            st.audio(tts_file, format="audio/mp3")
-        else:
-            st.error("Failed to generate audio.")    
+            st.audio(st.session_state.audio_file, format="audio/mp3")
 
 if __name__ == '__main__':
     import asyncio
