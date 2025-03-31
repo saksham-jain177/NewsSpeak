@@ -63,12 +63,14 @@ sentiment_analyzer = SentimentAnalyzer()
 # -------------------------------
 # Function: scrape_articles
 # -------------------------------
-def scrape_articles(company: str) -> List[Dict]:
-    """Scrape articles from various sources"""
+def scrape_articles(company: str, lang: str = 'en') -> List[Dict]:
+    """Scrape articles from various sources in specified language"""
     articles = []
     
-    # Google News RSS Feed
-    feed = feedparser.parse(f"https://news.google.com/rss/search?q={company}&hl=en-US&gl=US&ceid=US:en")
+    # Google News RSS Feed with language parameter
+    feed = feedparser.parse(
+        f"https://news.google.com/rss/search?q={company}&hl={lang}&gl=US&ceid=US:{lang}"
+    )
     
     for entry in feed.entries[:5]:  # Limit to 5 articles
         article = {

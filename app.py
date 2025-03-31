@@ -5,6 +5,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from dotenv import load_dotenv
 import warnings
 warnings.filterwarnings('ignore')
+from typing import List, Dict, Optional
+
+# Define SUPPORTED_LANGUAGES at the module level
+SUPPORTED_LANGUAGES = {
+    'hi': 'Hindi',
+    'es': 'Spanish',
+    'fr': 'French',
+    'de': 'German',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'zh-cn': 'Chinese (Simplified)',
+    'ar': 'Arabic',
+    'ru': 'Russian'
+}
 
 # Load environment variables
 load_dotenv()
@@ -24,7 +38,6 @@ import os
 from utils import SentimentAnalyzer, LLMSummarizer  # Updated import
 import asyncio
 import html
-from typing import List, Dict
 import re
 import aiohttp
 from datetime import datetime, timedelta
@@ -38,7 +51,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Updated styling with optimized font loading and analytics blocking
+# Updated styling with progress bar enhancement
 st.markdown("""
     <style>
         /* Block Segment Analytics */
@@ -49,7 +62,7 @@ st.markdown("""
             font-family: 'Source Sans Pro';
             font-style: normal;
             font-weight: 400;
-            font-display: swap;  /* This helps with font loading */
+            font-display: swap;
             src: local('Source Sans Pro');
         }
         
@@ -57,9 +70,44 @@ st.markdown("""
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         
-        /* Progress bar styling */
+        /* Enhanced Progress bar styling */
         .stProgress > div > div > div > div {
-            background-color: #1f77b4;
+            background: linear-gradient(to right, #28a745, #34d058);
+            border-radius: 10px;
+            height: 20px;
+        }
+        
+        .stProgress > div > div > div {
+            background-color: #f0f2f5;
+            border-radius: 10px;
+            height: 20px;
+        }
+        
+        /* Progress label styling with better contrast */
+        .progress-label {
+            position: relative;
+            font-size: 14px;
+            font-weight: 600;
+            margin: 8px 0;
+            padding: 5px 10px;
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            color: var(--text-color, #262730);
+            text-shadow: 0 1px 1px rgba(255, 255, 255, 0.2);
+        }
+
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            .progress-label {
+                color: #ffffff;
+                text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+            }
+        }
+        
+        /* Progress percentage highlight */
+        .progress-percentage {
+            color: #28a745;
+            font-weight: 700;
         }
         
         /* Apply font globally */
@@ -67,17 +115,6 @@ st.markdown("""
             font-family: 'Source Sans Pro', -apple-system, BlinkMacSystemFont, sans-serif;
         }
     </style>
-    
-    <!-- Completely disable Segment analytics -->
-    <script>
-        window.addEventListener('load', function() {
-            // Disable analytics
-            window.analytics = false;
-            // Remove analytics script tag if it exists
-            const analyticsScript = document.querySelector('script[src*="analytics.js"]');
-            if (analyticsScript) analyticsScript.remove();
-        });
-    </script>
 """, unsafe_allow_html=True)
 
 # Download necessary NLTK data packages
@@ -250,38 +287,76 @@ def generate_final_sentiment(sentiments, sentiment_scores):
 
 # Module 5: Text-to-Speech Generation Function
 
-async def translate_text(text):
-    """Async function to translate text to Hindi"""
+async def translate_text(text: str, target_lang: str = None) -> str:
+    """Async function to translate text to target language"""
+    if target_lang is None:
+        target_lang = st.session_state.target_language
+        
     translator = Translator()
     try:
-        translation = await translator.translate(text, dest='hi')
+        translation = await translator.translate(text, dest=target_lang)
         return translation.text
     except Exception as e:
         st.error(f"Translation error: {str(e)}")
         return None
 
-async def generate_tts(text, filename="output.mp3"):
+async def generate_tts(text: str, filename: str = "output.mp3") -> Optional[str]:
     """
-    Translate the text to Hindi and generate an audio file using gTTS.
+    Translate and generate TTS in the selected language.
     Returns the filename of the generated audio.
     """
     try:
-        # Directly await the translation
-        hindi_text = await translate_text(text)
+        target_lang = st.session_state.target_language
+        translated_text = await translate_text(text, target_lang)
         
-        if hindi_text is None:
+        if translated_text is None:
             return None
 
         # Clean the text
-        hindi_text = html.unescape(hindi_text)
+        translated_text = html.unescape(translated_text)
         
         # Generate TTS
-        tts = gTTS(text=hindi_text, lang='hi', slow=False)
+        tts = gTTS(text=translated_text, lang=target_lang, slow=False)
         tts.save(filename)
         return filename
     except Exception as e:
         st.error(f"TTS generation error: {str(e)}")
         return None
+
+async def create_translated_summary(report: Dict) -> str:
+    """Create a comprehensive summary in the selected language"""
+    company = report["Company"]
+    articles = report["Articles"]
+    final_sentiment = report["Final Sentiment Analysis"]
+    
+    target_lang = st.session_state.target_language
+    
+    # Create summary template based on language
+    if target_lang == 'hi':
+        summary = f"{company} के बारे में समाचार विश्लेषण:\n\n"
+    else:
+        summary = f"News analysis for {company}:\n\n"
+        
+    # Translate the basic stats
+    summary += await translate_text(
+        f"Total articles found: {len(articles)}\n"
+        f"Overall sentiment: {final_sentiment}\n\n"
+    )
+    
+    for idx, article in enumerate(articles, 1):
+        try:
+            translated_title = await translate_text(article['Title'])
+            translated_sentiment = await translate_text(f"Sentiment: {article['Sentiment']}")
+            translated_topics = await translate_text(f"Topics: {', '.join(article['Topics'])}")
+            
+            summary += f"{idx}. {translated_title}\n"
+            summary += f"{translated_sentiment}\n"
+            summary += f"{translated_topics}\n\n"
+        except Exception as e:
+            st.warning(f"Translation failed for article {idx}: {str(e)}")
+            continue
+    
+    return summary
 
 
 # Main Streamlit Application
@@ -360,10 +435,28 @@ if 'current_company' not in st.session_state:
     st.session_state.current_company = None
 if 'audio_file' not in st.session_state:
     st.session_state.audio_file = None
+if 'target_language' not in st.session_state:
+    st.session_state.target_language = 'hi'  # Default to Hindi
 
 async def main():
     st.title("NewsSpeak: News Summarization & TTS Application")
-    st.write("Enter a company name to fetch related news articles, perform sentiment analysis, and generate a Hindi audio summary.")
+    
+    # Language selector in the sidebar - move this to the top
+    with st.sidebar:
+        st.subheader("Language Settings")
+        selected_language = st.selectbox(
+            "Select Output Language",
+            options=list(SUPPORTED_LANGUAGES.keys()),
+            format_func=lambda x: SUPPORTED_LANGUAGES[x],
+            index=list(SUPPORTED_LANGUAGES.keys()).index(st.session_state.target_language)
+        )
+        if selected_language != st.session_state.target_language:
+            st.session_state.target_language = selected_language
+            st.session_state.audio_file = None  # Clear previous audio when language changes
+    
+    # This will now update reactively whenever the language changes
+    current_language = SUPPORTED_LANGUAGES[st.session_state.target_language]
+    st.write(f"Enter a company name to fetch related news articles, perform sentiment analysis, and generate a {current_language} audio summary.")
 
     status_container = st.empty()
     
@@ -393,9 +486,11 @@ async def main():
         source_counts = Counter(sources)
         st.info(f"Found {len(articles)} articles")  # Simplified message
 
-        # Initialize progress bar
+        # Initialize progress tracking
+        progress_placeholder = st.empty()
         progress_bar = st.progress(0)
-        
+        progress_text = st.empty()
+
         # Initialize report structure
         report = {
             "Company": company,
@@ -407,6 +502,19 @@ async def main():
         sentiments = []
         
         for idx, article in enumerate(articles):
+            # Calculate percentage
+            progress_percentage = (idx + 1) / len(articles)
+            percentage_text = f"{int(progress_percentage * 100)}%"
+            
+            # Update progress bar and text with enhanced formatting
+            progress_bar.progress(progress_percentage)
+            progress_text.markdown(f"""
+                <div class="progress-label">
+                    Processing article {idx + 1} of {len(articles)} 
+                    <span class="progress-percentage">({percentage_text})</span>
+                </div>
+            """, unsafe_allow_html=True)
+
             # Ensure we're working with clean text
             clean_title = BeautifulSoup(article['title'], 'html.parser').get_text().strip()
             clean_content = BeautifulSoup(article.get('content', article.get('summary', '')), 'html.parser').get_text().strip()
@@ -535,39 +643,46 @@ async def main():
         st.subheader("Structured Report")
         st.json(report)
 
-        # Create two columns for the download buttons
-        col1, col2 = st.columns(2)
-
-        with col1:
-            report_json = json.dumps(report, indent=2, ensure_ascii=False)
-            st.download_button(
-                label="Download Full Report",
-                data=report_json.encode('utf-8'),
-                file_name=f"{st.session_state.current_company}_full_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-                key="full_report_download"
-            )
-
-        with col2:
-            sentiment_report = {
-                "company": st.session_state.current_company,
-                "sentiment_distribution": report["Analysis_Summary"]["Sentiment_Distribution"],
-                "time_period": report["Analysis_Summary"]["Time_Period"]
-            }
-            sentiment_json = json.dumps(sentiment_report, indent=2, ensure_ascii=False)
-            st.download_button(
-                label="Download Sentiment Analysis",
-                data=sentiment_json.encode('utf-8'),
-                file_name=f"{st.session_state.current_company}_sentiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-                key="sentiment_download"
-            )
+        # Create a container for download buttons with better alignment
+        st.write("")  # Add some spacing
+        button_container = st.container()
         
-        # Generate Hindi TTS for comprehensive summary
+        # Use columns with a smaller ratio to bring buttons closer together
+        with button_container:
+            col1, col_spacer, col2 = st.columns([4, 1, 4])  # Adjust ratio for better spacing
+
+            with col1:
+                report_json = json.dumps(report, indent=2, ensure_ascii=False)
+                st.download_button(
+                    label="Download Full Report",
+                    data=report_json.encode('utf-8'),
+                    file_name=f"{st.session_state.current_company}_full_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    key="full_report_download",
+                    use_container_width=True  # Make button use full column width
+                )
+
+            with col2:
+                sentiment_report = {
+                    "company": st.session_state.current_company,
+                    "sentiment_distribution": report["Analysis_Summary"]["Sentiment_Distribution"],
+                    "time_period": report["Analysis_Summary"]["Time_Period"]
+                }
+                sentiment_json = json.dumps(sentiment_report, indent=2, ensure_ascii=False)
+                st.download_button(
+                    label="Download Sentiment Analysis",
+                    data=sentiment_json.encode('utf-8'),
+                    file_name=f"{st.session_state.current_company}_sentiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    key="sentiment_download",
+                    use_container_width=True  # Make button use full column width
+                )
+        
+        # Generate audio summary in the selected language
         if st.session_state.audio_file is None:
-            st.info("Generating Hindi audio summary...")
-            hindi_summary = await create_hindi_summary(report)
-            tts_file = await generate_tts(hindi_summary)
+            st.info(f"Generating {SUPPORTED_LANGUAGES[st.session_state.target_language]} audio summary...")
+            translated_summary = await create_translated_summary(report)
+            tts_file = await generate_tts(translated_summary)
             if tts_file and os.path.exists(tts_file):
                 st.session_state.audio_file = tts_file
             else:
@@ -575,7 +690,7 @@ async def main():
         
         # Display audio if it exists
         if st.session_state.audio_file and os.path.exists(st.session_state.audio_file):
-            st.subheader("Hindi Audio Summary")
+            st.subheader("Audio Summary")
             st.audio(st.session_state.audio_file, format="audio/mp3")
 
 if __name__ == '__main__':
